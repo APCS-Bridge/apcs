@@ -1,0 +1,701 @@
+datasource db {
+  provider = "postgresql"
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+// ═══════════════════════════════════════════════════════════════
+// ENUMS - Based on schema.sql
+// ═══════════════════════════════════════════════════════════════
+
+enum UserRole {
+  USER
+  ADMIN
+  SUPERADMIN
+}
+
+enum Methodology {
+  KANBAN
+  SCRUM
+}
+
+enum ScrumRole {
+  PRODUCT_OWNER
+  SCRUM_MASTER
+  DEVELOPER
+}
+
+enum SprintStatus {
+  PLANNING
+  ACTIVE
+  COMPLETED
+}
+
+enum InvitationStatus {
+  PENDING
+  ACCEPTED
+  DENIED
+}
+
+enum MeetingType {
+  DAILY_STANDUP
+  SPRINT_PLANNING
+  SPRINT_REVIEW
+  SPRINT_RETROSPECTIVE
+  BACKLOG_REFINEMENT
+  CUSTOM
+}
+
+enum DocumentType {
+  FOLDER
+  FILE
+}
+
+enum DocumentRole {
+  OWNER
+  EDITOR
+  VIEWER
+}
+
+enum DocumentVisibility {
+  PUBLIC
+  PRIVATE
+}
+
+enum NotificationType {
+  SPACE_INVITATION_RECEIVED
+  INVITATION_ACCEPTED
+  INVITATION_DENIED
+  BACKLOG_ITEM_CREATED
+  BACKLOG_ITEM_ASSIGNED
+  BACKLOG_ITEM_UPDATED
+  SPRINT_CREATED
+  SPRINT_STARTED
+  SPRINT_COMPLETED
+  SPRINT_UPDATED
+  SPRINT_BACKLOG_ITEM_CREATED
+  SPRINT_BACKLOG_ITEM_ASSIGNED
+  SPRINT_BACKLOG_ITEM_UPDATED
+  TASK_ASSIGNED
+  TASK_UPDATED
+  TASK_COMPLETED
+  TASK_COMMENT_ADDED
+  MEETING_SCHEDULED
+  MEETING_REMINDER
+  MEETING_UPDATED
+  MEETING_CANCELLED
+  DAILY_STANDUP_REMINDER
+  SPRINT_DEADLINE_REMINDER
+  MESSAGE_RECEIVED
+  MENTION_RECEIVED
+}
+
+// ═══════════════════════════════════════════════════════════════
+// User Model
+// ═══════════════════════════════════════════════════════════════
+
+model User {
+  id                   String               @id @default(cuid())
+  email                String               @unique
+  passwordHash         String               @map("password_hash")
+  name                 String
+  role                 UserRole             @default(USER)
+  avatarUrl            String?              @map("avatar_url")
+  createdAt            DateTime             @default(now()) @map("created_at")
+  // Relations
+  spaceMemberships     SpaceMember[]
+  ownedSpaces          Space[]
+  createdBacklogItems  BacklogItem[]        @relation("BacklogItemCreator")
+  assignedBacklogItems BacklogItem[]        @relation("BacklogItemAssignee")
+  assignedTasks        Task[]
+  sentInvitations      Invitation[]         @relation("InvitationSender")
+  receivedInvitations  Invitation[]         @relation("InvitationReceiver")
+  revokedTokens        RevokedToken[]
+  sessions             Session?
+  createdMeetings      Meeting[]
+  notificationTokens   NotificationToken[]
+  notifications        Notification[]
+  roomMemberships      RoomMember[]
+  sentMessages         Message[]
+  createdDocuments     Document[]           @relation("DocumentCreator")
+  documentPermissions  DocumentPermission[]
+  grantedPermissions   DocumentPermission[] @relation("PermissionGranter")
+  documentComments     DocumentComment[]
+  documentVersions     DocumentVersion[]
+  documentActivities   DocumentActivity[]
+
+  // Document Review Workflow Relations
+  createdWorkflows DocumentReviewWorkflow[] @relation("WorkflowCreator")
+  assignedReviews  DocumentReviewer[]       @relation("AssignedReviewer")
+  reviewComments   ReviewComment[]          @relation("CommentAuthor")
+
+  @@map("users")
+}
+
+model Session {
+  id        String    @id @default(cuid())
+  userId    String    @unique @map("user_id") @db.VarChar(30)
+  spaceId   String?   @map("space_id") @db.VarChar(30)
+  sprintId  String?   @map("sprint_id") @db.VarChar(30)
+  updatedAt DateTime? @default(now()) @updatedAt @map("updated_at") @db.Timestamp(6)
+  createdAt DateTime? @default(now()) @map("created_at") @db.Timestamp(6)
+  spaces    Space?    @relation(fields: [spaceId], references: [id], onUpdate: NoAction)
+  sprints   Sprint?   @relation(fields: [sprintId], references: [id], onUpdate: NoAction)
+  users     User      @relation(fields: [userId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@index([spaceId], map: "idx_sessions_space")
+  @@index([sprintId], map: "idx_sessions_sprint")
+  @@index([userId], map: "idx_sessions_user")
+  @@map("sessions")
+}
+
+// ═══════════════════════════════════════════════════════════════
+// Revoked Tokens Model (for logout functionality)
+// ═══════════════════════════════════════════════════════════════
+
+model RevokedToken {
+  id        String   @id @default(cuid())
+  token     String   @unique
+  userId    String   @map("user_id")
+  revokedAt DateTime @default(now()) @map("revoked_at")
+  expiresAt DateTime @map("expires_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("revoked_tokens")
+}
+
+// ═══════════════════════════════════════════════════════════════
+// Invitation Model
+// ═══════════════════════════════════════════════════════════════
+
+model Invitation {
+  id          String           @id @default(cuid())
+  email       String
+  role        UserRole         @default(USER)
+  status      InvitationStatus @default(PENDING)
+  senderId    String           @map("sender_id")
+  receiverId  String?          @map("receiver_id")
+  createdAt   DateTime         @default(now()) @map("created_at")
+  respondedAt DateTime?        @map("responded_at")
+
+  sender   User  @relation("InvitationSender", fields: [senderId], references: [id], onDelete: Cascade)
+  receiver User? @relation("InvitationReceiver", fields: [receiverId], references: [id], onDelete: Cascade)
+
+  @@map("invitations")
+}
+
+// ═══════════════════════════════════════════════════════════════
+// Space Model (Workspaces)
+// ═══════════════════════════════════════════════════════════════
+
+model Space {
+  id          String      @id @default(cuid())
+  name        String
+  methodology Methodology @default(KANBAN)
+  ownerId     String      @map("owner_id")
+  gitRepoUrl  String?     @map("git_repo_url")
+  createdAt   DateTime    @default(now()) @map("created_at")
+
+  // Relations
+  owner                   User                     @relation(fields: [ownerId], references: [id])
+  members                 SpaceMember[]
+  backlogItems            BacklogItem[]
+  sprints                 Sprint[]
+  columns                 Column[]
+  meetings                Meeting[]
+  sessions                Session[]
+  documents               Document[]
+  documentReviewWorkflows DocumentReviewWorkflow[]
+
+  @@map("spaces")
+}
+
+// ═══════════════════════════════════════════════════════════════
+// Space Member Model (with Scrum roles)
+// ═══════════════════════════════════════════════════════════════
+
+model SpaceMember {
+  id        String     @id @default(cuid())
+  spaceId   String     @map("space_id")
+  userId    String     @map("user_id")
+  scrumRole ScrumRole? @map("scrum_role") // NULL for KANBAN, required for SCRUM
+  joinedAt  DateTime   @default(now()) @map("joined_at")
+
+  // Relations
+  space Space @relation(fields: [spaceId], references: [id], onDelete: Cascade)
+  user  User  @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([spaceId, userId])
+  @@map("space_members")
+}
+
+// ═══════════════════════════════════════════════════════════════
+// Backlog Item Model (Product Backlog)
+// ═══════════════════════════════════════════════════════════════
+
+model BacklogItem {
+  id             String   @id @default(cuid())
+  spaceId        String   @map("space_id")
+  title          String   @db.VarChar(500)
+  description    String?  @db.Text
+  sequenceNumber Int      @default(autoincrement()) @map("sequence_number") // Like JIRA: #1, #2, #3
+  position       Int      @default(0) // Priority order in backlog
+  assigneeId     String?  @map("assignee_id")
+  createdById    String   @map("created_by_id")
+  createdAt      DateTime @default(now()) @map("created_at")
+
+  // Relations
+  space              Space               @relation(fields: [spaceId], references: [id], onDelete: Cascade)
+  assignee           User?               @relation("BacklogItemAssignee", fields: [assigneeId], references: [id])
+  createdBy          User                @relation("BacklogItemCreator", fields: [createdById], references: [id])
+  sprintBacklogItems SprintBacklogItem[]
+  tasks              Task[]
+
+  @@map("backlog_items")
+}
+
+// ═══════════════════════════════════════════════════════════════
+// Sprint Model (SCRUM only)
+// ═══════════════════════════════════════════════════════════════
+
+model Sprint {
+  id        String       @id @default(cuid())
+  spaceId   String       @map("space_id")
+  name      String
+  goal      String?      @db.Text
+  status    SprintStatus @default(PLANNING)
+  startDate DateTime?    @map("start_date") @db.Date
+  endDate   DateTime?    @map("end_date") @db.Date
+  createdAt DateTime     @default(now()) @map("created_at")
+
+  // Relations
+  space              Space               @relation(fields: [spaceId], references: [id], onDelete: Cascade)
+  sprintBacklogItems SprintBacklogItem[]
+  columns            Column[]
+  meetings           Meeting[]
+  sessions           Session[]
+
+  @@map("sprints")
+}
+
+// ═══════════════════════════════════════════════════════════════
+// Sprint Backlog Item Model (SCRUM: Selected items for sprint)
+// ═══════════════════════════════════════════════════════════════
+
+model SprintBacklogItem {
+  id            String   @id @default(cuid())
+  sprintId      String   @map("sprint_id")
+  backlogItemId String   @map("backlog_item_id")
+  storyPoints   Int?     @map("story_points")
+  position      Int      @default(0) // Order in sprint backlog
+  addedAt       DateTime @default(now()) @map("added_at")
+
+  // Relations
+  sprint      Sprint      @relation(fields: [sprintId], references: [id], onDelete: Cascade)
+  backlogItem BacklogItem @relation(fields: [backlogItemId], references: [id], onDelete: Cascade)
+  tasks       Task[]
+
+  @@unique([sprintId, backlogItemId])
+  @@index([sprintId])
+  @@index([backlogItemId])
+  @@map("sprint_backlog_items")
+}
+
+// ═══════════════════════════════════════════════════════════════
+// Task Model (Kanban tasks - can be KANBAN or SCRUM)
+// ═══════════════════════════════════════════════════════════════
+
+model Task {
+  id                  String   @id @default(cuid())
+  backlogItemId       String?  @map("backlog_item_id") // For KANBAN
+  sprintBacklogItemId String?  @map("sprint_backlog_item_id") // For SCRUM
+  assigneeId          String?  @map("assignee_id")
+  createdAt           DateTime @default(now()) @map("created_at")
+
+  // Relations
+  backlogItem       BacklogItem?       @relation(fields: [backlogItemId], references: [id], onDelete: Cascade)
+  sprintBacklogItem SprintBacklogItem? @relation(fields: [sprintBacklogItemId], references: [id], onDelete: Cascade)
+  assignee          User?              @relation(fields: [assigneeId], references: [id])
+  columnTask        ColumnTask?
+
+  @@map("tasks")
+}
+
+// ═══════════════════════════════════════════════════════════════
+// Column Model (Kanban columns - for Space or Sprint)
+// ═══════════════════════════════════════════════════════════════
+
+model Column {
+  id        String   @id @default(cuid())
+  spaceId   String?  @map("space_id") // NULL if column belongs to sprint
+  sprintId  String?  @map("sprint_id") // NULL if column belongs to space
+  name      String   @db.VarChar(100)
+  wipLimit  Int?     @map("wip_limit") // Work In Progress limit (NULL = unlimited)
+  position  Int      @default(0) // Display order
+  createdAt DateTime @default(now()) @map("created_at")
+
+  // Relations
+  space       Space?       @relation(fields: [spaceId], references: [id], onDelete: Cascade)
+  sprint      Sprint?      @relation(fields: [sprintId], references: [id], onDelete: Cascade)
+  columnTasks ColumnTask[]
+
+  @@map("columns")
+}
+
+// ═══════════════════════════════════════════════════════════════
+// Column Task Model (Junction table for task positioning)
+// ═══════════════════════════════════════════════════════════════
+
+model ColumnTask {
+  id       String   @id @default(cuid())
+  columnId String   @map("column_id")
+  taskId   String   @unique @map("task_id") // A task can only be in ONE column at a time
+  position Int      @default(0) // Position in column (drag & drop)
+  movedAt  DateTime @default(now()) @map("moved_at")
+
+  // Relations
+  column Column @relation(fields: [columnId], references: [id], onDelete: Cascade)
+  task   Task   @relation(fields: [taskId], references: [id], onDelete: Cascade)
+
+  @@index([columnId])
+  @@index([taskId])
+  @@map("columns_tasks")
+}
+
+// ═══════════════════════════════════════════════════════════════
+// Meeting Model (SCRUM meetings managed by Scrum Master)
+// ═══════════════════════════════════════════════════════════════
+
+model Meeting {
+  id          String      @id @default(cuid())
+  spaceId     String      @map("space_id")
+  sprintId    String?     @map("sprint_id") // Optional: link to specific sprint
+  title       String      @db.VarChar(255)
+  description String?     @db.Text
+  type        MeetingType @default(CUSTOM)
+  scheduledAt DateTime    @map("scheduled_at") // Meeting date and time
+  duration    Int         @default(30) // Duration in minutes
+  createdById String      @map("created_by_id") // Scrum Master who created it
+  createdAt   DateTime    @default(now()) @map("created_at")
+  updatedAt   DateTime    @updatedAt @map("updated_at")
+
+  // Relations
+  space     Space   @relation(fields: [spaceId], references: [id], onDelete: Cascade)
+  sprint    Sprint? @relation(fields: [sprintId], references: [id], onDelete: Cascade)
+  createdBy User    @relation(fields: [createdById], references: [id])
+
+  @@map("meetings")
+}
+
+// ═══════════════════════════════════════════════════════════════
+// Notification Token Model (FCM tokens for push notifications)
+// ═══════════════════════════════════════════════════════════════
+
+model NotificationToken {
+  id        String   @id @default(cuid())
+  userId    String   @map("user_id")
+  fcmToken  String   @unique @map("fcm_token")
+  platform  String?  @db.VarChar(50)
+  createdAt DateTime @default(now()) @map("created_at")
+
+  // Relations
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, fcmToken])
+  @@map("notification_tokens")
+}
+
+// ═══════════════════════════════════════════════════════════════
+// Notification Model (Notification history/inbox)
+// ═══════════════════════════════════════════════════════════════
+
+model Notification {
+  id        String           @id @default(cuid())
+  userId    String           @map("user_id")
+  type      NotificationType
+  title     String           @db.VarChar(255)
+  body      String           @db.Text
+  data      Json? // Additional metadata (spaceId, taskId, etc.)
+  read      Boolean          @default(false)
+  createdAt DateTime         @default(now()) @map("created_at")
+  readAt    DateTime?        @map("read_at")
+
+  // Relations
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([read])
+  @@index([createdAt])
+  @@map("notifications")
+}
+
+// ═══════════════════════════════════════════════════════════════
+// Chat Room Model (Direct and Group Chats)
+// ═══════════════════════════════════════════════════════════════
+
+model Room {
+  id        String   @id @default(cuid())
+  name      String?  @db.VarChar(255) // NULL for direct chats, named for group chats
+  isGroup   Boolean  @default(false) @map("is_group") // false = 1-on-1, true = group chat
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  // Relations
+  members  RoomMember[]
+  messages Message[]
+
+  @@map("rooms")
+}
+
+// ═══════════════════════════════════════════════════════════════
+// Room Member Model (Users in chat rooms)
+// ═══════════════════════════════════════════════════════════════
+
+model RoomMember {
+  id       String   @id @default(cuid())
+  roomId   String   @map("room_id")
+  userId   String   @map("user_id")
+  joinedAt DateTime @default(now()) @map("joined_at")
+
+  // Relations
+  room Room @relation(fields: [roomId], references: [id], onDelete: Cascade)
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([roomId, userId])
+  @@index([userId])
+  @@index([roomId])
+  @@map("room_members")
+}
+
+// ═══════════════════════════════════════════════════════════════
+// Message Model (Chat messages)
+// ═══════════════════════════════════════════════════════════════
+
+model Message {
+  id        String   @id @default(cuid())
+  roomId    String   @map("room_id")
+  senderId  String   @map("sender_id")
+  content   String   @db.Text
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  // Relations
+  room   Room @relation(fields: [roomId], references: [id], onDelete: Cascade)
+  sender User @relation(fields: [senderId], references: [id], onDelete: Cascade)
+
+  @@index([roomId])
+  @@index([senderId])
+  @@map("messages")
+}
+
+// ═══════════════════════════════════════════════════════════════
+// Document Management System
+// ═══════════════════════════════════════════════════════════════
+
+// Document/Folder Model
+model Document {
+  id   String       @id @default(cuid())
+  name String
+  type DocumentType
+
+  // File-specific fields (null for folders)
+  fileUrl  String? @map("file_url")
+  fileName String? @map("file_name")
+  fileSize Int?    @map("file_size")
+  mimeType String? @map("mime_type")
+
+  // Hierarchy
+  spaceId  String  @map("space_id")
+  parentId String? @map("parent_id")
+  path     String // /folder1/folder2/ for fast queries
+
+  // Permissions
+  visibility DocumentVisibility @default(PRIVATE)
+  createdBy  String             @map("created_by")
+
+  // Metadata
+  description String?  @db.Text
+  isDeleted   Boolean  @default(false) @map("is_deleted")
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  // Relations
+  space    Space      @relation(fields: [spaceId], references: [id], onDelete: Cascade)
+  creator  User       @relation("DocumentCreator", fields: [createdBy], references: [id])
+  parent   Document?  @relation("DocumentHierarchy", fields: [parentId], references: [id], onDelete: Cascade)
+  children Document[] @relation("DocumentHierarchy")
+
+  permissions DocumentPermission[]
+  comments    DocumentComment[]
+  versions    DocumentVersion[]
+  activities  DocumentActivity[]
+
+  @@index([spaceId])
+  @@index([parentId])
+  @@index([createdBy])
+  @@index([path])
+  @@index([type])
+  @@map("documents")
+}
+
+// Document Permission Model
+model DocumentPermission {
+  id         String       @id @default(cuid())
+  documentId String       @map("document_id")
+  userId     String       @map("user_id")
+  role       DocumentRole
+  grantedBy  String       @map("granted_by")
+  grantedAt  DateTime     @default(now()) @map("granted_at")
+
+  document      Document @relation(fields: [documentId], references: [id], onDelete: Cascade)
+  user          User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  grantedByUser User     @relation("PermissionGranter", fields: [grantedBy], references: [id])
+
+  @@unique([documentId, userId])
+  @@index([userId])
+  @@index([documentId])
+  @@map("document_permissions")
+}
+
+// Document Comment Model
+model DocumentComment {
+  id         String   @id @default(cuid())
+  documentId String   @map("document_id")
+  userId     String   @map("user_id")
+  content    String   @db.Text
+  parentId   String?  @map("parent_id")
+  isResolved Boolean  @default(false) @map("is_resolved")
+  createdAt  DateTime @default(now()) @map("created_at")
+  updatedAt  DateTime @updatedAt @map("updated_at")
+
+  document Document          @relation(fields: [documentId], references: [id], onDelete: Cascade)
+  user     User              @relation(fields: [userId], references: [id])
+  parent   DocumentComment?  @relation("CommentThread", fields: [parentId], references: [id])
+  replies  DocumentComment[] @relation("CommentThread")
+
+  @@index([documentId])
+  @@index([userId])
+  @@index([parentId])
+  @@map("document_comments")
+}
+
+// Document Version Model
+model DocumentVersion {
+  id            String   @id @default(cuid())
+  documentId    String   @map("document_id")
+  versionNumber Int      @map("version_number")
+  fileUrl       String   @map("file_url")
+  fileSize      Int      @map("file_size")
+  uploadedBy    String   @map("uploaded_by")
+  changeNote    String?  @map("change_note") @db.Text
+  createdAt     DateTime @default(now()) @map("created_at")
+
+  document Document @relation(fields: [documentId], references: [id], onDelete: Cascade)
+  uploader User     @relation(fields: [uploadedBy], references: [id])
+
+  @@unique([documentId, versionNumber])
+  @@index([documentId])
+  @@map("document_versions")
+}
+
+// Document Activity Model (Audit Log)
+model DocumentActivity {
+  id         String   @id @default(cuid())
+  documentId String   @map("document_id")
+  userId     String   @map("user_id")
+  action     String // created, updated, deleted, shared, commented, viewed, downloaded
+  metadata   Json? // Additional context
+  createdAt  DateTime @default(now()) @map("created_at")
+
+  document Document @relation(fields: [documentId], references: [id], onDelete: Cascade)
+  user     User     @relation(fields: [userId], references: [id])
+
+  @@index([documentId])
+  @@index([userId])
+  @@index([createdAt])
+  @@map("document_activities")
+}
+
+// ═══════════════════════════════════════════════════════════════
+// Document Review Workflow System
+// ═══════════════════════════════════════════════════════════════
+
+enum ReviewStatus {
+  PENDING
+  APPROVED
+  REJECTED
+}
+
+// Document Review Workflow Model
+model DocumentReviewWorkflow {
+  id          String  @id @default(cuid())
+  title       String  @db.VarChar(255)
+  description String? @db.Text
+  documentUrl String  @map("document_url") // URL to the uploaded document
+  fileName    String  @map("file_name")
+  fileSize    Int     @map("file_size")
+  mimeType    String  @map("mime_type")
+
+  spaceId   String?  @map("space_id")
+  createdBy String   @map("created_by")
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  // Relations
+  space     Space?             @relation(fields: [spaceId], references: [id], onDelete: Cascade)
+  creator   User               @relation("WorkflowCreator", fields: [createdBy], references: [id], onDelete: Cascade)
+  reviewers DocumentReviewer[]
+
+  @@index([createdBy])
+  @@index([spaceId])
+  @@index([createdAt])
+  @@map("document_review_workflows")
+}
+
+// Document Reviewer Model (Assigned reviewers)
+model DocumentReviewer {
+  id         String       @id @default(cuid())
+  workflowId String       @map("workflow_id")
+  reviewerId String       @map("reviewer_id")
+  status     ReviewStatus @default(PENDING)
+
+  assignedAt DateTime @default(now()) @map("assigned_at")
+  updatedAt  DateTime @updatedAt @map("updated_at")
+
+  // Relations
+  workflow DocumentReviewWorkflow @relation(fields: [workflowId], references: [id], onDelete: Cascade)
+  reviewer User                   @relation("AssignedReviewer", fields: [reviewerId], references: [id], onDelete: Cascade)
+  comments ReviewComment[]
+
+  @@unique([workflowId, reviewerId])
+  @@index([workflowId])
+  @@index([reviewerId])
+  @@index([status])
+  @@map("document_reviewers")
+}
+
+// Review Comment Model (Threaded comments)
+model ReviewComment {
+  id         String  @id @default(cuid())
+  reviewerId String  @map("reviewer_id") // FK to DocumentReviewer
+  userId     String  @map("user_id") // Who wrote the comment (reviewer or doc creator)
+  content    String  @db.Text
+  parentId   String? @map("parent_id") // For threading (replies)
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  // Relations
+  documentReviewer DocumentReviewer @relation(fields: [reviewerId], references: [id], onDelete: Cascade)
+  author           User             @relation("CommentAuthor", fields: [userId], references: [id], onDelete: Cascade)
+  parent           ReviewComment?   @relation("CommentThread", fields: [parentId], references: [id])
+  replies          ReviewComment[]  @relation("CommentThread")
+
+  @@index([reviewerId])
+  @@index([userId])
+  @@index([parentId])
+  @@map("review_comments")
+}

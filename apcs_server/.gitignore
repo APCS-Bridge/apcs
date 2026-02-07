@@ -1,0 +1,16 @@
+node_modules 
+.env
+.env.production
+prisma/seed.ts
+prompt.md
+USER_MANAGEMENT_API.md
+reqs.md
+apcs_agent_system/
+uploads/
+#Readmes
+notificationFlowmd
+NOTIFICATION_WORKFLOW.md
+WORKFLOW_IMPLEMENTATION_STATUS.md
+#redisNotification-ForNetandFastApi.md
+DOCKER_README.md
+MicroHack

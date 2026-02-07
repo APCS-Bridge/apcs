@@ -1,5 +1,7 @@
+version: "3.8"
+
 services:
-  # PostgreSQL Database (shared)
+  # PostgreSQL Database
   postgres:
     image: postgres:16-alpine
     container_name: apcs_postgres
@@ -12,7 +14,6 @@ services:
       - "${POSTGRES_PORT:-5432}:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
-      - ./db:/docker-entrypoint-initdb.d:ro
     networks:
       - apcs_network
     healthcheck:
@@ -21,7 +22,7 @@ services:
       timeout: 5s
       retries: 5
 
-  # Redis for BullMQ (notifications)
+  # Redis for BullMQ
   redis:
     image: redis:7-alpine
     container_name: apcs_redis
@@ -39,40 +40,18 @@ services:
       retries: 5
     command: redis-server --appendonly yes
 
-  # Agent API - FastAPI Python (apcs_agent_system)
-  agent-api:
-    build:
-      context: ./apcs_agent_system
-      dockerfile: Dockerfile
-    container_name: apcs_agent_api
-    restart: unless-stopped
-    environment:
-      DATABASE_URL: postgresql://${POSTGRES_USER:-apcs_user}:${POSTGRES_PASSWORD:-apcs_password}@postgres:5432/${POSTGRES_DB:-apcs_db}
-      MISTRAL_API_KEY: ${MISTRAL_API_KEY}
-      OPENAI_API_KEY: ${OPENAI_API_KEY}
-      RUNTIME_ENV: ${RUNTIME_ENV:-production}
-    ports:
-      - "8000:8000"
-    depends_on:
-      postgres:
-        condition: service_healthy
-    volumes:
-      - ./apcs_agent_system:/app
-    networks:
-      - apcs_network
-    command: uvicorn api.main:app --host 0.0.0.0 --port 8000
-
-  # Backend API - Node.js Express (apcs_server)
+  # Backend Application
   backend:
     build:
-      context: ./apcs_server
+      context: .
       dockerfile: Dockerfile
     container_name: apcs_backend
     restart: unless-stopped
     ports:
-      - "3001:3000"
+      - "${PORT:-3001}:3000"
     environment:
       NODE_ENV: ${NODE_ENV:-production}
+      PORT: 3000
       DATABASE_URL: postgresql://${POSTGRES_USER:-apcs_user}:${POSTGRES_PASSWORD:-apcs_password}@postgres:5432/${POSTGRES_DB:-apcs_db}
       REDIS_HOST: redis
       REDIS_PORT: 6379
@@ -81,6 +60,7 @@ services:
       FIREBASE_PROJECT_ID: ${FIREBASE_PROJECT_ID}
       FIREBASE_CLIENT_EMAIL: ${FIREBASE_CLIENT_EMAIL}
       FIREBASE_PRIVATE_KEY: ${FIREBASE_PRIVATE_KEY}
+      # Optional: for private GitHub repos (Repository tab). Create at: GitHub → Settings → Developer settings → Personal access tokens
       GITHUB_TOKEN: ${GITHUB_TOKEN:-}
     depends_on:
       postgres:
@@ -90,28 +70,9 @@ services:
     networks:
       - apcs_network
     volumes:
-      - ./apcs_server/src/config:/app/src/config:ro
-      - ./db:/db-scripts:ro
-
-  # Frontend - Next.js (MicroHack)
-  frontend:
-    build:
-      context: ./MicroHack
-      dockerfile: Dockerfile
-    container_name: apcs_frontend
-    restart: unless-stopped
-    ports:
-      - "3000:3000"
-    environment:
-      NODE_ENV: ${NODE_ENV:-production}
-      # Ces URLs sont utilisées côté client (navigateur), donc localhost
-      NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:3001/api}
-      NEXT_PUBLIC_AGENT_API_URL: ${NEXT_PUBLIC_AGENT_API_URL:-http://localhost:8000}
-    depends_on:
-      - backend
-      - agent-api
-    networks:
-      - apcs_network
+      - ./src/config:/app/src/config:ro
+    # db push applies schema to container DB (no migration files or history needed)
+    command: sh -c "npx prisma db push && node dist/server.js"
 
 networks:
   apcs_network:
