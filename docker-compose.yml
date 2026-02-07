@@ -1,0 +1,124 @@
+services:
+  # PostgreSQL Database (shared)
+  postgres:
+    image: postgres:16-alpine
+    container_name: apcs_postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-microhack}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-securepassword}
+      POSTGRES_DB: ${POSTGRES_DB:-collaboration_platform}
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./db:/docker-entrypoint-initdb.d:ro
+    networks:
+      - apcs_network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-microhack} -d ${POSTGRES_DB:-collaboration_platform}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Redis for BullMQ (notifications)
+  redis:
+    image: redis:7-alpine
+    container_name: apcs_redis
+    restart: unless-stopped
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    volumes:
+      - redis_data:/data
+    networks:
+      - apcs_network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    command: redis-server --appendonly yes
+
+  # Agent API - FastAPI Python (apcs_agent_system)
+  agent-api:
+    build:
+      context: ./apcs_agent_system
+      dockerfile: Dockerfile
+    container_name: apcs_agent_api
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-microhack}:${POSTGRES_PASSWORD:-securepassword}@postgres:5432/${POSTGRES_DB:-collaboration_platform}
+      MISTRAL_API_KEY: ${MISTRAL_API_KEY}
+      OPENAI_API_KEY: ${OPENAI_API_KEY}
+      RUNTIME_ENV: ${RUNTIME_ENV:-production}
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - ./apcs_agent_system:/app
+    networks:
+      - apcs_network
+    command: uvicorn api.main:app --host 0.0.0.0 --port 8000
+
+  # Backend API - Node.js Express (apcs_server)
+  backend:
+    build:
+      context: ./apcs_server
+      dockerfile: Dockerfile
+    container_name: apcs_backend
+    restart: unless-stopped
+    ports:
+      - "3001:3000"
+    environment:
+      NODE_ENV: ${NODE_ENV:-production}
+      DATABASE_URL: postgresql://${POSTGRES_USER:-microhack}:${POSTGRES_PASSWORD:-securepassword}@postgres:5432/${POSTGRES_DB:-collaboration_platform}
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      JWT_SECRET: ${JWT_SECRET}
+      JWT_EXPIRES_IN: ${JWT_EXPIRES_IN:-7d}
+      FIREBASE_PROJECT_ID: ${FIREBASE_PROJECT_ID}
+      FIREBASE_CLIENT_EMAIL: ${FIREBASE_CLIENT_EMAIL}
+      FIREBASE_PRIVATE_KEY: ${FIREBASE_PRIVATE_KEY}
+      GITHUB_TOKEN: ${GITHUB_TOKEN:-}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - apcs_network
+    volumes:
+      - ./apcs_server/src/config:/app/src/config:ro
+    command: sh -c "npx prisma db push --accept-data-loss && node dist/server.js"
+
+  # Frontend - Next.js (MicroHack)
+  frontend:
+    build:
+      context: ./MicroHack
+      dockerfile: Dockerfile
+    container_name: apcs_frontend
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      NODE_ENV: ${NODE_ENV:-production}
+      # Ces URLs sont utilisées côté client (navigateur), donc localhost
+      NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:3001/api}
+      NEXT_PUBLIC_AGENT_API_URL: ${NEXT_PUBLIC_AGENT_API_URL:-http://localhost:8000}
+    depends_on:
+      - backend
+      - agent-api
+    networks:
+      - apcs_network
+
+networks:
+  apcs_network:
+    driver: bridge
+
+volumes:
+  postgres_data:
+    driver: local
+  redis_data:
+    driver: local
