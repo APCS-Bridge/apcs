@@ -115,14 +115,17 @@ async def list_workflow_tools() -> list[Tool]:
         # Tasks
         Tool(
             name="create_task",
-            description="Créer une nouvelle tâche liée à un item du backlog (KANBAN). Utilise sequence_number (ex: #4) ou backlog_item_id (CUID).",
+            description="Créer une nouvelle tâche Kanban. Soit directement avec title/description (création automatique d'un backlog item invisible), soit liée à un item existant via sequence_number.",
             inputSchema={
                 "type": "object",
                 "properties": {
-                    "space_id": {"type": "string", "description": "ID du workspace (requis pour résoudre le sequence_number)"},
-                    "sequence_number": {"type": "integer", "description": "Numéro de l'item du backlog (ex: 4 pour #4)"},
-                    "backlog_item_id": {"type": "string", "description": "ID CUID de l'item du backlog (alternatif à sequence_number)"},
-                    "assignee_id": {"type": "string", "description": "ID de l'assigné (optionnel)"}
+                    "space_id": {"type": "string", "description": "ID du workspace (OBLIGATOIRE)"},
+                    "title": {"type": "string", "description": "Titre de la tâche (OPTION 1: création directe)"},
+                    "description": {"type": "string", "description": "Description de la tâche (optionnel avec title)"},
+                    "sequence_number": {"type": "integer", "description": "Numéro de l'item du backlog existant (OPTION 2: ex: 4 pour #4)"},
+                    "backlog_item_id": {"type": "string", "description": "ID CUID de l'item du backlog (OPTION 3: alternatif à sequence_number)"},
+                    "assignee_id": {"type": "string", "description": "ID de l'assigné (optionnel)"},
+                    "created_by_id": {"type": "string", "description": "ID du créateur (optionnel, récupéré du workspace si absent)"}
                 },
                 "required": ["space_id"]
             }
@@ -218,6 +221,9 @@ async def call_workflow_tool(name: str, arguments: dict[str, Any]) -> list[TextC
             methodology = space.methodology
             result = f"📊 **Board - {space.name}** (Méthodologie: {methodology})\n\n"
             
+            # Ajouter un mapping des colonnes en commentaire HTML pour que l'agent puisse parser les column_id
+            columns_mapping = []
+            
             if methodology == "SCRUM":
                 # Mode SCRUM: récupérer le sprint actif et son board
                 active_sprint = await Sprint.get_active(space_id)
@@ -246,13 +252,20 @@ async def call_workflow_tool(name: str, arguments: dict[str, Any]) -> list[TextC
                     # Récupérer le board du sprint
                     board = await Task.get_sprint_board(active_sprint.id)
                     
+                    # Construire le mapping des colonnes
+                    if board:
+                        for column_name, data in board.items():
+                            columns_mapping.append({"name": column_name, "id": data['column']['id']})
+                    
                     if board:
                         for column_name, data in board.items():
                             wip = f" (WIP: {data['column']['wip_limit']})" if data['column'].get('wip_limit') else ""
                             result += f"🔹 **{column_name}**{wip} ({len(data['tasks'])} tâches)\n"
                             for task in data['tasks'][:5]:
                                 points = f" [{task.get('story_points', '?')} pts]" if task.get('story_points') else ""
-                                result += f"  • #{task['sequence_number']}: {task['title']}{points}\n"
+                                # Ajouter les IDs en format JSON caché pour que l'agent puisse les parser
+                                ids_json = f"{{\"task_id\":\"{task['id']}\",\"column_id\":\"{data['column']['id']}\",\"item_seq\":{task['sequence_number']}}}"
+                                result += f"  • #{task['sequence_number']}: {task['title']}{points} <!-- {ids_json} -->\n"
                             if len(data['tasks']) > 5:
                                 result += f"  ... et {len(data['tasks']) - 5} autres\n"
                             result += "\n"
@@ -269,6 +282,11 @@ async def call_workflow_tool(name: str, arguments: dict[str, Any]) -> list[TextC
                 # Mode KANBAN: board classique avec colonnes
                 board = await Task.get_kanban_board(space_id)
                 
+                # Construire le mapping des colonnes
+                if board:
+                    for column_name, data in board.items():
+                        columns_mapping.append({"name": column_name, "id": data['column']['id']})
+                
                 if not board:
                     result += "📋 Board Kanban vide - Aucune colonne configurée.\n"
                     result += "💡 Crée des colonnes (To Do, In Progress, Done) pour commencer."
@@ -277,7 +295,9 @@ async def call_workflow_tool(name: str, arguments: dict[str, Any]) -> list[TextC
                         wip = f" (WIP: {data['column']['wip_limit']})" if data['column'].get('wip_limit') else ""
                         result += f"🔹 **{column_name}**{wip} ({len(data['tasks'])} tâches)\n"
                         for task in data['tasks'][:5]:
-                            result += f"  • #{task['sequence_number']}: {task['title']}\n"
+                            # Ajouter les IDs en format JSON caché pour que l'agent puisse les parser
+                            ids_json = f"{{\"task_id\":\"{task['id']}\",\"column_id\":\"{data['column']['id']}\",\"item_seq\":{task['sequence_number']}}}"
+                            result += f"  • #{task['sequence_number']}: {task['title']} <!-- {ids_json} -->\n"
                         if len(data['tasks']) > 5:
                             result += f"  ... et {len(data['tasks']) - 5} autres\n"
                         result += "\n"
@@ -286,6 +306,11 @@ async def call_workflow_tool(name: str, arguments: dict[str, Any]) -> list[TextC
                 items = await BacklogItem.get_by_space(space_id)
                 if items:
                     result += f"\n📋 Product Backlog ({len(items)} items disponibles)"
+            
+            # Ajouter le mapping des colonnes en commentaire HTML à la fin
+            if columns_mapping:
+                import json
+                result += f"\n\n<!-- COLUMNS_MAPPING: {json.dumps(columns_mapping)} -->"
             
             return [TextContent(type="text", text=result)]
         
@@ -372,26 +397,49 @@ async def call_workflow_tool(name: str, arguments: dict[str, Any]) -> list[TextC
             if not space_id:
                 return [TextContent(type="text", text="❌ Erreur: space_id est obligatoire")]
             
-            # Résoudre le backlog_item_id
             backlog_item_id = arguments.get("backlog_item_id")
             sequence_number = arguments.get("sequence_number")
+            title = arguments.get("title")
             
-            if not backlog_item_id and not sequence_number:
-                return [TextContent(type="text", text="❌ Erreur: sequence_number ou backlog_item_id requis")]
-            
-            # Si sequence_number fourni, résoudre en backlog_item_id
-            if sequence_number and not backlog_item_id:
-                item = await BacklogItem.find_by_sequence(space_id, sequence_number)
-                if not item:
-                    return [TextContent(type="text", text=f"❌ Item #{sequence_number} introuvable dans ce workspace")]
-                backlog_item_id = item.id
-            
-            # Vérifier que l'item existe
-            if backlog_item_id:
+            # OPTION 1: Création directe avec title (création automatique d'un backlog item)
+            if title:
+                created_by_id = arguments.get("created_by_id")
+                if not created_by_id:
+                    space = await Space.find_by_id(space_id)
+                    if space:
+                        created_by_id = space.owner_id
+                    else:
+                        return [TextContent(type="text", text=f"❌ Workspace '{space_id}' introuvable")]
+                
+                # Créer automatiquement un backlog item
+                backlog_item_id = await BacklogItem.create(
+                    space_id=space_id,
+                    title=title,
+                    created_by_id=created_by_id,
+                    description=arguments.get("description"),
+                    assignee_id=arguments.get("assignee_id")
+                )
                 item = await BacklogItem.find_by_id(backlog_item_id)
-                if not item:
-                    return [TextContent(type="text", text=f"❌ Item {backlog_item_id} introuvable")]
+                
+            # OPTION 2/3: Lier à un item existant (sequence_number ou backlog_item_id)
+            else:
+                if not backlog_item_id and not sequence_number:
+                    return [TextContent(type="text", text="❌ Erreur: title OU sequence_number OU backlog_item_id requis")]
+                
+                # Si sequence_number fourni, résoudre en backlog_item_id
+                if sequence_number and not backlog_item_id:
+                    item = await BacklogItem.find_by_sequence(space_id, sequence_number)
+                    if not item:
+                        return [TextContent(type="text", text=f"❌ Item #{sequence_number} introuvable dans ce workspace")]
+                    backlog_item_id = item.id
+                
+                # Vérifier que l'item existe
+                if backlog_item_id:
+                    item = await BacklogItem.find_by_id(backlog_item_id)
+                    if not item:
+                        return [TextContent(type="text", text=f"❌ Item {backlog_item_id} introuvable")]
             
+            # Créer la tâche
             task_id = await Task.create(
                 backlog_item_id=backlog_item_id,
                 assignee_id=arguments.get("assignee_id")
@@ -403,7 +451,7 @@ async def call_workflow_tool(name: str, arguments: dict[str, Any]) -> list[TextC
                 task = await Task.find_by_id(task_id)
                 await task.move_to_column(first_column['id'])
             
-            return [TextContent(type="text", text=f"✅ Tâche créée pour #{item.sequence_number} - {item.title} (ID: {task_id})")]
+            return [TextContent(type="text", text=f"✅ Tâche créée: #{item.sequence_number} - {item.title} et placée dans '{first_column['name']}'")]
 
         elif name == "move_task":
             task = await Task.find_by_id(arguments["task_id"])

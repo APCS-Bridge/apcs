@@ -39,10 +39,10 @@ services:
       retries: 5
     command: redis-server --appendonly yes
 
-  # Agent API - FastAPI Python (apcs_agent_system)
+  # Agent API - FastAPI Python (AIBackend)
   agent-api:
     build:
-      context: ./apcs_agent_system
+      context: ./AIBackend
       dockerfile: Dockerfile
     container_name: apcs_agent_api
     restart: unless-stopped
@@ -57,15 +57,15 @@ services:
       postgres:
         condition: service_healthy
     volumes:
-      - ./apcs_agent_system:/app
+      - ./AIBackend:/app
     networks:
       - apcs_network
     command: uvicorn api.main:app --host 0.0.0.0 --port 8000
 
-  # Backend API - Node.js Express (apcs_server)
+  # Backend API - Node.js Express (Backend)
   backend:
     build:
-      context: ./apcs_server
+      context: ./Backend
       dockerfile: Dockerfile
     container_name: apcs_backend
     restart: unless-stopped
@@ -90,13 +90,13 @@ services:
     networks:
       - apcs_network
     volumes:
-      - ./apcs_server/src/config:/app/src/config:ro
+      - ./Backend/src/config:/app/src/config:ro
       - ./db:/db-scripts:ro
 
-  # Frontend - Next.js (MicroHack)
+  # Frontend - Next.js (FrontEnd)
   frontend:
     build:
-      context: ./MicroHack
+      context: ./FrontEnd
       dockerfile: Dockerfile
     container_name: apcs_frontend
     restart: unless-stopped
